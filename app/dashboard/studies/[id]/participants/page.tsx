@@ -69,7 +69,7 @@ export default function ParticipantsPage() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `participants_${studyId}.csv`
+    a.download = `${studyTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_participants.csv`
     a.click()
     URL.revokeObjectURL(url)
     setExporting(false)

@@ -48,13 +48,20 @@ export default function StudentPortalPage() {
 
     const enrolledIds = new Set(enrolled.map(e => e.studyId))
 
+    // Fetch studies this student was disqualified from
+    const { data: disqualifications } = await supabase
+      .from('study_disqualifications')
+      .select('study_id')
+      .eq('student_email', userEmail)
+    const disqualifiedIds = new Set((disqualifications || []).map((d: any) => d.study_id))
+
     const { data: activeStudies } = await supabase
       .from('studies')
       .select('id, title, description')
       .eq('status', 'active')
       .order('created_at', { ascending: false })
 
-    setAvailable((activeStudies || []).filter(s => !enrolledIds.has(s.id)))
+    setAvailable((activeStudies || []).filter(s => !enrolledIds.has(s.id) && !disqualifiedIds.has(s.id)))
     setLoading(false)
   }
 

@@ -128,7 +128,20 @@ export default function StudentCoursePage() {
       return
     }
 
-    // Not enrolled yet
+    // Check if already disqualified (prevents re-attempt via direct URL)
+    const { data: disq } = await supabase
+      .from('study_disqualifications')
+      .select('id')
+      .eq('study_id', studyId)
+      .eq('student_email', email)
+      .maybeSingle()
+
+    if (disq) {
+      setStep('disqualified')
+      return
+    }
+
+    // Not enrolled yet — start from beginning
     setVisibleSteps(buildStepLabels(bcqs, [], [], true))
     setStep(bcqs.length > 0 ? 'bcq' : 'consent')
   }
@@ -149,7 +162,7 @@ export default function StudentCoursePage() {
   }
 
   // ── BCQ step ─────────────────────────────────────────────────
-  function handleBCQContinue() {
+  async function handleBCQContinue() {
     setError('')
 
     // Require an answer for every question that has options (not short_text)
@@ -166,7 +179,20 @@ export default function StudentCoursePage() {
       q.correct_answer && !checkAnswer(bcqAnswers[q.id] || '', q.correct_answer, q.question_type)
     )
 
-    setStep(failed ? 'disqualified' : 'consent')
+    if (failed) {
+      setSubmitting(true)
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        await supabase.from('study_disqualifications').upsert(
+          { study_id: studyId, student_email: user.email!.toLowerCase().trim() },
+          { onConflict: 'study_id,student_email' }
+        )
+      }
+      setSubmitting(false)
+      setStep('disqualified')
+    } else {
+      setStep('consent')
+    }
   }
 
   // ── Consent + enrollment ──────────────────────────────────────
@@ -326,9 +352,9 @@ export default function StudentCoursePage() {
               ))}
             </div>
             {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
-            <button onClick={handleBCQContinue}
-              className="mt-6 w-full bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700 transition-colors">
-              Continue →
+            <button onClick={handleBCQContinue} disabled={submitting}
+              className="mt-6 w-full bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors">
+              {submitting ? 'Checking…' : 'Continue →'}
             </button>
           </div>
         )}
