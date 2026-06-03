@@ -6,7 +6,23 @@ import { supabase } from '@/lib/supabase'
 import { Condition, SurveyQuestion, BackgroundCheckQuestion } from '@/lib/types'
 import { QuestionRenderer, QuestionLike } from '@/components/survey/QuestionRenderer'
 
-type CourseStep = 'loading' | 'bcq' | 'consent' | 'pre_survey' | 'course' | 'post_survey'
+type CourseStep = 'loading' | 'bcq' | 'disqualified' | 'consent' | 'pre_survey' | 'course' | 'post_survey'
+
+function checkAnswer(response: string, expected: string, questionType: string): boolean {
+  if (!expected || questionType === 'short_text') return true
+  if (questionType === 'multiple_choice') {
+    const correctSet = new Set(expected.split('||').map(s => s.trim()).filter(Boolean))
+    return correctSet.has(response.trim())
+  }
+  if (questionType === 'checkbox') {
+    const r = new Set(response.split('||').map(s => s.trim()).filter(Boolean))
+    const e = new Set(expected.split('||').map(s => s.trim()).filter(Boolean))
+    if (r.size !== e.size) return false
+    for (const item of e) if (!r.has(item)) return false
+    return true
+  }
+  return response.trim() === expected.trim()
+}
 
 interface StudyInfo {
   id: string
@@ -134,7 +150,23 @@ export default function StudentCoursePage() {
 
   // ── BCQ step ─────────────────────────────────────────────────
   function handleBCQContinue() {
-    setStep('consent')
+    setError('')
+
+    // Require an answer for every question that has options (not short_text)
+    const unanswered = bcqQuestions.filter(q =>
+      q.question_type !== 'short_text' && !bcqAnswers[q.id]?.trim()
+    )
+    if (unanswered.length > 0) {
+      setError('Please answer all questions before continuing.')
+      return
+    }
+
+    // Check each question that has a correct answer set
+    const failed = bcqQuestions.some(q =>
+      q.correct_answer && !checkAnswer(bcqAnswers[q.id] || '', q.correct_answer, q.question_type)
+    )
+
+    setStep(failed ? 'disqualified' : 'consent')
   }
 
   // ── Consent + enrollment ──────────────────────────────────────
@@ -232,7 +264,7 @@ export default function StudentCoursePage() {
 
   // ── Step index for progress bar ──────────────────────────────
   const STEP_TO_LABEL: Record<CourseStep, string> = {
-    loading: '', bcq: 'Background Check', consent: 'Consent',
+    loading: '', disqualified: '', bcq: 'Background Check', consent: 'Consent',
     pre_survey: 'Pre-Survey', course: 'Course', post_survey: 'Post-Survey'
   }
   const currentLabel = STEP_TO_LABEL[step]
@@ -250,7 +282,7 @@ export default function StudentCoursePage() {
       </Link>
 
       {/* Progress indicator */}
-      {visibleSteps.length > 0 && (
+      {visibleSteps.length > 0 && step !== 'disqualified' && (
         <div className="mb-8">
           <div className="flex items-center gap-2 mb-2">
             {visibleSteps.map((s, i) => (
@@ -279,9 +311,9 @@ export default function StudentCoursePage() {
         {/* ── Background Check ── */}
         {step === 'bcq' && (
           <div>
-            <h2 className="text-xl font-bold text-slate-900 mb-1">Background Questions</h2>
+            <h2 className="text-xl font-bold text-slate-900 mb-1">Eligibility Questions</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Please answer the following questions before you begin. You can proceed regardless of your answers.
+              Please answer the following questions. Only students who meet the criteria for this study will be enrolled.
             </p>
             <div className="space-y-6">
               {bcqQuestions.map(q => (
@@ -289,14 +321,33 @@ export default function StudentCoursePage() {
                   key={q.id}
                   question={q as QuestionLike}
                   value={bcqAnswers[q.id] || ''}
-                  onChange={v => setBcqAnswers(prev => ({ ...prev, [q.id]: v }))}
+                  onChange={v => { setBcqAnswers(prev => ({ ...prev, [q.id]: v })); setError('') }}
                 />
               ))}
             </div>
+            {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
             <button onClick={handleBCQContinue}
-              className="mt-8 w-full bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700 transition-colors">
+              className="mt-6 w-full bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700 transition-colors">
               Continue →
             </button>
+          </div>
+        )}
+
+        {/* ── Disqualified ── */}
+        {step === 'disqualified' && (
+          <div className="text-center py-4">
+            <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl">🔍</span>
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Not a match for this course</h2>
+            <p className="text-slate-500 text-sm mb-6 max-w-sm mx-auto">
+              Based on your responses, you don't meet the eligibility criteria for this study.
+              You're welcome to explore other available courses.
+            </p>
+            <Link href="/student/portal"
+              className="inline-block bg-blue-600 text-white rounded-xl px-6 py-2.5 text-sm font-medium hover:bg-blue-700 transition-colors">
+              Browse Other Courses →
+            </Link>
           </div>
         )}
 

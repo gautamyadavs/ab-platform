@@ -14,13 +14,22 @@ function checkMatch(
   questionType: string
 ): boolean | null {
   if (!expected || questionType === 'short_text') return null
+
+  if (questionType === 'multiple_choice') {
+    // Student picks one answer; correct if it is in the set of correct answers
+    const correctSet = new Set(expected.split('||').map(s => s.trim()).filter(Boolean))
+    return correctSet.has(response.trim())
+  }
+
   if (questionType === 'checkbox') {
+    // Student picks multiple answers; correct if they match the exact expected set
     const r = new Set(response.split('||').map(s => s.trim()).filter(Boolean))
     const e = new Set(expected.split('||').map(s => s.trim()).filter(Boolean))
     if (r.size !== e.size) return false
     for (const item of e) if (!r.has(item)) return false
     return true
   }
+
   return response.trim() === expected.trim()
 }
 
@@ -128,9 +137,9 @@ export async function GET(req: NextRequest) {
   // ── CSV export ───────────────────────────────────────────────
   // Wide format: one row per participant, one column-pair per question
   const questionHeaders = questions.flatMap(q => [
-    `Q${q.order_index + 1}: ${q.question_text.slice(0, 40)}`,
-    `Q${q.order_index + 1} Expected`,
-    `Q${q.order_index + 1} Match`
+    q.question_text,
+    `${q.question_text} (Expected Answer)`,
+    `${q.question_text} (Match)`
   ])
 
   const header = ['email', 'enrolled_at', ...questionHeaders].map(csvCell).join(',')

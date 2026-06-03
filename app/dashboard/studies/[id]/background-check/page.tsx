@@ -32,7 +32,7 @@ type FormState = {
   question_text: string
   question_type: QuestionType
   choices: string          // one per line
-  mc_correct: string       // text of the correct MC choice
+  mc_correct: string[]     // texts of correct MC choices (can be multiple)
   cb_correct: string[]     // texts of correct checkbox choices
   likert_scale: 5 | 7
   likert_low: string
@@ -44,7 +44,7 @@ const defaultForm = (): FormState => ({
   question_text: '',
   question_type: 'multiple_choice',
   choices: '',
-  mc_correct: '',
+  mc_correct: [],
   cb_correct: [],
   likert_scale: 5,
   likert_low: 'Strongly Disagree',
@@ -60,7 +60,7 @@ function buildPayload(form: FormState, studyId: string, orderIndex: number) {
     const choices = form.choices.split('\n').map(c => c.trim()).filter(Boolean)
     options_json = { choices }
     correct_answer = form.question_type === 'multiple_choice'
-      ? form.mc_correct
+      ? form.mc_correct.join('||')
       : form.cb_correct.join('||')
   } else if (form.question_type === 'likert') {
     options_json = { scale: form.likert_scale, low_label: form.likert_low, high_label: form.likert_high }
@@ -125,6 +125,15 @@ export default function BackgroundCheckPage() {
   // Derived choices list from textarea
   const parsedChoices = form.choices.split('\n').map(c => c.trim()).filter(Boolean)
 
+  function toggleMcCorrect(choice: string) {
+    setForm(f => ({
+      ...f,
+      mc_correct: f.mc_correct.includes(choice)
+        ? f.mc_correct.filter(c => c !== choice)
+        : [...f.mc_correct, choice]
+    }))
+  }
+
   function toggleCbCorrect(choice: string) {
     setForm(f => ({
       ...f,
@@ -149,7 +158,7 @@ export default function BackgroundCheckPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Background Check</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Students answer these questions before the course. All students proceed regardless of their answers — the expected answers are for your analysis.
+            Students must answer these questions correctly to enroll. Wrong answers disqualify them from this study — they can still browse other courses.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -250,7 +259,7 @@ export default function BackgroundCheckPage() {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Question Type</label>
                 <select
                   value={form.question_type}
-                  onChange={e => setForm(f => ({ ...f, question_type: e.target.value as QuestionType, mc_correct: '', cb_correct: [], likert_correct: '' }))}
+                  onChange={e => setForm(f => ({ ...f, question_type: e.target.value as QuestionType, mc_correct: [], cb_correct: [], likert_correct: '' }))}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
                 >
                   {(Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).map(t => (
@@ -267,7 +276,7 @@ export default function BackgroundCheckPage() {
                     <textarea
                       rows={4}
                       value={form.choices}
-                      onChange={e => setForm(f => ({ ...f, choices: e.target.value, mc_correct: '' }))}
+                      onChange={e => setForm(f => ({ ...f, choices: e.target.value, mc_correct: [] }))}
                       className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
                       placeholder={"Option A\nOption B\nOption C"}
                     />
@@ -275,16 +284,15 @@ export default function BackgroundCheckPage() {
                   {parsedChoices.length > 0 && (
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-2">
-                        Expected Answer <span className="font-normal text-slate-400">(for analysis)</span>
+                        Correct Answer(s) <span className="font-normal text-slate-400">(check all that are correct)</span>
                       </label>
                       <div className="space-y-1.5">
                         {parsedChoices.map(c => (
                           <label key={c} className="flex items-center gap-2 cursor-pointer">
                             <input
-                              type="radio"
-                              name="mc-correct"
-                              checked={form.mc_correct === c}
-                              onChange={() => setForm(f => ({ ...f, mc_correct: c }))}
+                              type="checkbox"
+                              checked={form.mc_correct.includes(c)}
+                              onChange={() => toggleMcCorrect(c)}
                               className="accent-amber-600"
                             />
                             <span className="text-sm text-slate-700">{c}</span>

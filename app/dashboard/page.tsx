@@ -17,7 +17,7 @@ type BCQDraft = {
   question_text: string
   question_type: QuestionType
   choices: string[]
-  mc_correct_index: number | null
+  mc_correct_indices: number[]
   checkbox_correct_indices: number[]
   likert_scale: 5 | 7
   likert_low: string
@@ -29,7 +29,7 @@ const emptyBCQ = (): BCQDraft => ({
   question_text: '',
   question_type: 'multiple_choice',
   choices: ['', ''],
-  mc_correct_index: null,
+  mc_correct_indices: [],
   checkbox_correct_indices: [],
   likert_scale: 5,
   likert_low: 'Strongly Disagree',
@@ -44,14 +44,11 @@ function buildBCQPayload(q: BCQDraft, index: number) {
   if (q.question_type === 'multiple_choice' || q.question_type === 'checkbox') {
     const choices = q.choices.filter(c => c.trim())
     options_json = { choices }
-    if (q.question_type === 'multiple_choice') {
-      correct_answer = q.mc_correct_index !== null ? (q.choices[q.mc_correct_index]?.trim() || '') : ''
-    } else {
-      correct_answer = q.checkbox_correct_indices
-        .map(i => q.choices[i]?.trim() || '')
-        .filter(Boolean)
-        .join('||')
-    }
+    const indices = q.question_type === 'multiple_choice' ? q.mc_correct_indices : q.checkbox_correct_indices
+    correct_answer = indices
+      .map(i => q.choices[i]?.trim() || '')
+      .filter(Boolean)
+      .join('||')
   } else if (q.question_type === 'likert') {
     options_json = { scale: q.likert_scale, low_label: q.likert_low, high_label: q.likert_high }
     correct_answer = q.likert_correct
@@ -249,7 +246,7 @@ export default function DashboardPage() {
                       Enable Background Check
                     </label>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Add questions shown to students before the course. Students always proceed regardless of their answers — responses are recorded for your analysis.
+                      Add eligibility questions students must answer correctly to enroll. Wrong answers disqualify them from this study.
                     </p>
                   </div>
                 </div>
@@ -339,7 +336,7 @@ export default function DashboardPage() {
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">Background Check</h2>
                   <p className="text-sm text-slate-500 mt-0.5">
-                    Students will see these questions before the course. They always proceed regardless of their answers — you mark the expected answer for analysis purposes only.
+                    Students must answer these questions correctly to enroll. Wrong answers disqualify them from this study — they can still browse other courses.
                   </p>
                 </div>
 
@@ -504,25 +501,35 @@ function BCQCard({ q, index, total, onChange, onRemove }: {
 
   function removeChoice(ci: number) {
     const newChoices = q.choices.filter((_, j) => j !== ci)
-    const newMC = q.mc_correct_index === ci ? null
-      : q.mc_correct_index !== null && q.mc_correct_index > ci ? q.mc_correct_index - 1
-      : q.mc_correct_index
-    const newCB = q.checkbox_correct_indices
-      .filter(j => j !== ci)
-      .map(j => j > ci ? j - 1 : j)
-    onChange({ choices: newChoices, mc_correct_index: newMC, checkbox_correct_indices: newCB })
+    const shiftIndices = (arr: number[]) =>
+      arr.filter(j => j !== ci).map(j => j > ci ? j - 1 : j)
+    onChange({
+      choices: newChoices,
+      mc_correct_indices: shiftIndices(q.mc_correct_indices),
+      checkbox_correct_indices: shiftIndices(q.checkbox_correct_indices)
+    })
+  }
+
+  function toggleMCCorrect(ci: number) {
+    const already = q.mc_correct_indices.includes(ci)
+    onChange({
+      mc_correct_indices: already
+        ? q.mc_correct_indices.filter(j => j !== ci)
+        : [...q.mc_correct_indices, ci]
+    })
   }
 
   function toggleCheckboxCorrect(ci: number) {
     const already = q.checkbox_correct_indices.includes(ci)
-    const next = already
-      ? q.checkbox_correct_indices.filter(j => j !== ci)
-      : [...q.checkbox_correct_indices, ci]
-    onChange({ checkbox_correct_indices: next })
+    onChange({
+      checkbox_correct_indices: already
+        ? q.checkbox_correct_indices.filter(j => j !== ci)
+        : [...q.checkbox_correct_indices, ci]
+    })
   }
 
   function handleTypeChange(type: QuestionType) {
-    onChange({ question_type: type, mc_correct_index: null, checkbox_correct_indices: [], likert_correct: '' })
+    onChange({ question_type: type, mc_correct_indices: [], checkbox_correct_indices: [], likert_correct: '' })
   }
 
   return (
@@ -569,16 +576,15 @@ function BCQCard({ q, index, total, onChange, onRemove }: {
         {q.question_type === 'multiple_choice' && (
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-2">
-              Options — <span className="text-amber-600 font-normal">mark the expected answer (for analysis)</span>
+              Options — <span className="text-amber-600 font-normal">check all correct answers (can be more than one)</span>
             </label>
             <div className="space-y-2">
               {q.choices.map((choice, ci) => (
                 <div key={ci} className="flex items-center gap-2">
                   <input
-                    type="radio"
-                    name={`mc-correct-${index}`}
-                    checked={q.mc_correct_index === ci}
-                    onChange={() => onChange({ mc_correct_index: ci })}
+                    type="checkbox"
+                    checked={q.mc_correct_indices.includes(ci)}
+                    onChange={() => toggleMCCorrect(ci)}
                     className="accent-amber-600 flex-shrink-0"
                     title="Mark as correct answer"
                   />
@@ -595,7 +601,7 @@ function BCQCard({ q, index, total, onChange, onRemove }: {
                 </div>
               ))}
             </div>
-            <p className="text-xs text-slate-400 mt-1.5">Click the radio button to mark the expected answer. Students always proceed regardless of what they choose.</p>
+            <p className="text-xs text-slate-400 mt-1.5">Check the correct answer(s). Students always proceed regardless of what they choose.</p>
             <button type="button" onClick={addChoice}
               className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">+ Add option</button>
           </div>
