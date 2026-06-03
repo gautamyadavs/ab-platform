@@ -23,7 +23,6 @@ export default function ParticipantsPage() {
   const [filterCondition, setFilterCondition] = useState('all')
   const [studyTitle, setStudyTitle] = useState('')
   const [loading, setLoading] = useState(true)
-  const [exporting, setExporting] = useState(false)
   const [conditionCounts, setConditionCounts] = useState<Record<string, number>>({})
 
   useEffect(() => { load() }, [studyId])
@@ -58,21 +57,36 @@ export default function ParticipantsPage() {
     setLoading(false)
   }
 
-  async function handleExport() {
-    setExporting(true)
-    const { data: { session } } = await supabase.auth.getSession()
-    const token = session?.access_token
-    const res = await fetch(`/api/export?studyId=${studyId}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-    const blob = await res.blob()
+  function handleDownloadCSV() {
+    function cell(val: string | boolean | null | undefined) {
+      const s = String(val ?? '')
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"`
+        : s
+    }
+
+    const header = ['student_id', 'email', 'condition', 'enrolled_at', 'consent', 'pre_survey_done', 'course_done', 'post_survey_done']
+
+    const rows = filtered.map(p => [
+      cell(p.student_id),
+      cell(p.email),
+      cell(p.condition_label),
+      cell(new Date(p.created_at).toISOString()),
+      cell(p.consent_given_at ? 'yes' : 'no'),
+      cell(p.completed_pre_survey ? 'yes' : 'no'),
+      cell(p.completed_course ? 'yes' : 'no'),
+      cell(p.completed_post_survey ? 'yes' : 'no'),
+    ].join(','))
+
+    const csv = [header.join(','), ...rows].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${studyTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_participants.csv`
+    const suffix = filterCondition === 'all' ? 'all' : filterCondition.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+    a.download = `${studyTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_participants_${suffix}.csv`
     a.click()
     URL.revokeObjectURL(url)
-    setExporting(false)
   }
 
   function maskEmail(email: string) {
@@ -99,9 +113,9 @@ export default function ParticipantsPage() {
           <h1 className="text-2xl font-bold text-slate-900">Participants</h1>
           <p className="text-slate-500 text-sm mt-1">{participants.length} total enrolled</p>
         </div>
-        <button onClick={handleExport} disabled={exporting}
+        <button onClick={handleDownloadCSV} disabled={participants.length === 0}
           className="bg-slate-900 text-white rounded-xl px-4 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 transition-colors">
-          {exporting ? 'Exporting…' : '↓ Export CSV'}
+          ↓ Download CSV
         </button>
       </div>
 
