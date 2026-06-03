@@ -7,8 +7,16 @@ interface ConditionInput {
   description: string
 }
 
+interface BCQInput {
+  question_text: string
+  question_type: string
+  options_json: object | null
+  correct_answer: string
+  order_index: number
+}
+
 // POST /api/studies
-// Body: { study: { title, description, consent_text, target_per_condition }, conditions: [...] }
+// Body: { study: { title, description, consent_text, target_per_condition, has_background_check }, conditions: [...], backgroundCheckQuestions: [...] }
 // Requires researcher auth via bearer token
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
@@ -26,7 +34,7 @@ export async function POST(req: NextRequest) {
     { onConflict: 'id' }
   )
 
-  const { study: studyInput, conditions: conditionsInput } = await req.json()
+  const { study: studyInput, conditions: conditionsInput, backgroundCheckQuestions } = await req.json()
 
   const { data: study, error: studyErr } = await supabase
     .from('studies')
@@ -35,6 +43,7 @@ export async function POST(req: NextRequest) {
       description: studyInput.description,
       consent_text: studyInput.consent_text,
       target_per_condition: studyInput.target_per_condition,
+      has_background_check: studyInput.has_background_check ?? false,
       status: 'draft'
     })
     .select()
@@ -72,6 +81,27 @@ export async function POST(req: NextRequest) {
 
     if (condErr) {
       return NextResponse.json({ error: condErr.message }, { status: 500 })
+    }
+  }
+
+  const validBCQs: BCQInput[] = (backgroundCheckQuestions || []).filter(
+    (q: BCQInput) => q.question_text?.trim()
+  )
+
+  if (validBCQs.length > 0) {
+    const { error: bcqErr } = await supabase.from('background_check_questions').insert(
+      validBCQs.map(q => ({
+        study_id: study.id,
+        question_text: q.question_text.trim(),
+        question_type: q.question_type,
+        options_json: q.options_json,
+        correct_answer: q.correct_answer ?? '',
+        order_index: q.order_index
+      }))
+    )
+
+    if (bcqErr) {
+      return NextResponse.json({ error: bcqErr.message }, { status: 500 })
     }
   }
 

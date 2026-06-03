@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
-import { Study } from '@/lib/types'
+import { Study, QuestionType } from '@/lib/types'
 
 const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-amber-100 text-amber-700',
@@ -13,14 +13,69 @@ const STATUS_COLORS: Record<string, string> = {
 type ConditionDraft = { label: string; course_url: string; description: string }
 const emptyCondition = (): ConditionDraft => ({ label: '', course_url: '', description: '' })
 
+type BCQDraft = {
+  question_text: string
+  question_type: QuestionType
+  choices: string[]
+  mc_correct_index: number | null
+  checkbox_correct_indices: number[]
+  likert_scale: 5 | 7
+  likert_low: string
+  likert_high: string
+  likert_correct: string
+}
+
+const emptyBCQ = (): BCQDraft => ({
+  question_text: '',
+  question_type: 'multiple_choice',
+  choices: ['', ''],
+  mc_correct_index: null,
+  checkbox_correct_indices: [],
+  likert_scale: 5,
+  likert_low: 'Strongly Disagree',
+  likert_high: 'Strongly Agree',
+  likert_correct: ''
+})
+
+function buildBCQPayload(q: BCQDraft, index: number) {
+  let options_json: object | null = null
+  let correct_answer = ''
+
+  if (q.question_type === 'multiple_choice' || q.question_type === 'checkbox') {
+    const choices = q.choices.filter(c => c.trim())
+    options_json = { choices }
+    if (q.question_type === 'multiple_choice') {
+      correct_answer = q.mc_correct_index !== null ? (q.choices[q.mc_correct_index]?.trim() || '') : ''
+    } else {
+      correct_answer = q.checkbox_correct_indices
+        .map(i => q.choices[i]?.trim() || '')
+        .filter(Boolean)
+        .join('||')
+    }
+  } else if (q.question_type === 'likert') {
+    options_json = { scale: q.likert_scale, low_label: q.likert_low, high_label: q.likert_high }
+    correct_answer = q.likert_correct
+  }
+
+  return {
+    question_text: q.question_text.trim(),
+    question_type: q.question_type,
+    options_json,
+    correct_answer,
+    order_index: index
+  }
+}
+
 export default function DashboardPage() {
   const [studies, setStudies] = useState<Study[]>([])
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [showNew, setShowNew] = useState(false)
-  const [step, setStep] = useState<1 | 2>(1)
+  const [step, setStep] = useState<1 | 2 | 3>(1)
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState({ title: '', description: '', consent_text: '', target_per_condition: 50 })
   const [conditions, setConditions] = useState<ConditionDraft[]>([emptyCondition(), emptyCondition()])
+  const [bgCheckEnabled, setBgCheckEnabled] = useState(false)
+  const [bcQuestions, setBcQuestions] = useState<BCQDraft[]>([emptyBCQ()])
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
@@ -31,7 +86,6 @@ export default function DashboardPage() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { setLoading(false); return }
 
-    // Get all study IDs this researcher belongs to
     const { data: srData } = await supabase
       .from('study_researchers')
       .select('study_id')
@@ -66,6 +120,8 @@ export default function DashboardPage() {
   function openNew() {
     setForm({ title: '', description: '', consent_text: '', target_per_condition: 50 })
     setConditions([emptyCondition(), emptyCondition()])
+    setBgCheckEnabled(false)
+    setBcQuestions([emptyBCQ()])
     setStep(1)
     setShowNew(true)
   }
@@ -84,13 +140,18 @@ export default function DashboardPage() {
     const { data: { session } } = await supabase.auth.getSession()
     const token = session?.access_token
 
+    const backgroundCheckQuestions = bgCheckEnabled
+      ? bcQuestions.filter(q => q.question_text.trim()).map(buildBCQPayload)
+      : []
+
     const res = await fetch('/api/studies', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ study: form, conditions })
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({
+        study: { ...form, has_background_check: bgCheckEnabled },
+        conditions,
+        backgroundCheckQuestions
+      })
     })
 
     if (!res.ok) {
@@ -114,13 +175,11 @@ export default function DashboardPage() {
     setConditions(cs => cs.map((c, i) => i === index ? { ...c, [field]: value } : c))
   }
 
-  function addCondition() {
-    setConditions(cs => [...cs, emptyCondition()])
+  function updateBCQ(index: number, patch: Partial<BCQDraft>) {
+    setBcQuestions(qs => qs.map((q, i) => i === index ? { ...q, ...patch } : q))
   }
 
-  function removeCondition(index: number) {
-    setConditions(cs => cs.filter((_, i) => i !== index))
-  }
+  const totalSteps = bgCheckEnabled ? 3 : 2
 
   return (
     <div className="max-w-4xl">
@@ -139,22 +198,25 @@ export default function DashboardPage() {
       {showNew && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-7 max-h-[90vh] overflow-y-auto">
+
             {/* Step indicator */}
             <div className="flex items-center gap-2 mb-6">
-              <div className={`flex items-center gap-1.5 text-sm font-medium ${step === 1 ? 'text-blue-600' : 'text-slate-400'}`}>
-                <span className={`w-5 h-5 rounded-full text-xs flex items-center justify-center font-bold ${step === 1 ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'}`}>1</span>
-                Study Details
-              </div>
+              <StepDot num={1} current={step} label="Study Details" />
               <div className="flex-1 h-px bg-slate-200" />
-              <div className={`flex items-center gap-1.5 text-sm font-medium ${step === 2 ? 'text-blue-600' : 'text-slate-400'}`}>
-                <span className={`w-5 h-5 rounded-full text-xs flex items-center justify-center font-bold ${step === 2 ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'}`}>2</span>
-                Conditions
-              </div>
+              <StepDot num={2} current={step} label="Conditions" />
+              {bgCheckEnabled && (
+                <>
+                  <div className="flex-1 h-px bg-slate-200" />
+                  <StepDot num={3} current={step} label="Background Check" />
+                </>
+              )}
             </div>
 
-            {step === 1 ? (
+            {/* ── Step 1: Study Details ── */}
+            {step === 1 && (
               <form onSubmit={e => { e.preventDefault(); setStep(2) }} className="space-y-4">
                 <h2 className="text-lg font-bold text-slate-900">Study Details</h2>
+
                 <FormField label="Study Title *">
                   <input required value={form.title} onChange={e => setForm(f => ({...f, title: e.target.value}))}
                     className="input" placeholder="e.g. Intro to Statistics" />
@@ -172,6 +234,26 @@ export default function DashboardPage() {
                     onChange={e => setForm(f => ({...f, target_per_condition: parseInt(e.target.value)}))}
                     className="input w-32" />
                 </FormField>
+
+                {/* Background check toggle */}
+                <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                  <input
+                    type="checkbox"
+                    id="bg-check-toggle"
+                    checked={bgCheckEnabled}
+                    onChange={e => setBgCheckEnabled(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 accent-amber-600 flex-shrink-0"
+                  />
+                  <div>
+                    <label htmlFor="bg-check-toggle" className="text-sm font-medium text-slate-800 cursor-pointer">
+                      Enable Background Check
+                    </label>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Add questions shown to students before the course. Students always proceed regardless of their answers — responses are recorded for your analysis.
+                    </p>
+                  </div>
+                </div>
+
                 <div className="flex justify-end gap-3 pt-2">
                   <button type="button" onClick={closeNew}
                     className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2">Cancel</button>
@@ -181,8 +263,11 @@ export default function DashboardPage() {
                   </button>
                 </div>
               </form>
-            ) : (
-              <form onSubmit={createStudy} className="space-y-4">
+            )}
+
+            {/* ── Step 2: Conditions ── */}
+            {step === 2 && (
+              <form onSubmit={e => { e.preventDefault(); bgCheckEnabled ? setStep(3) : createStudy(e) }} className="space-y-4">
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">Study Conditions</h2>
                   <p className="text-sm text-slate-500 mt-0.5">Define the different treatment groups for your experiment</p>
@@ -197,57 +282,88 @@ export default function DashboardPage() {
                         </span>
                         <span className="text-sm font-medium text-slate-700">Condition {String.fromCharCode(65 + i)}</span>
                         {conditions.length > 1 && (
-                          <button type="button" onClick={() => removeCondition(i)}
+                          <button type="button" onClick={() => setConditions(cs => cs.filter((_, j) => j !== i))}
                             className="ml-auto text-xs text-red-400 hover:text-red-600">Remove</button>
                         )}
                       </div>
                       <div className="space-y-3">
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">Label *</label>
-                          <input
-                            required
-                            value={cond.label}
-                            onChange={e => updateCondition(i, 'label', e.target.value)}
+                          <input required value={cond.label} onChange={e => updateCondition(i, 'label', e.target.value)}
                             className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="e.g. Control, Treatment A, Video Format…"
-                          />
+                            placeholder="e.g. Control, Treatment A, Video Format…" />
                         </div>
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">Course URL *</label>
-                          <input
-                            required
-                            type="url"
-                            value={cond.course_url}
-                            onChange={e => updateCondition(i, 'course_url', e.target.value)}
+                          <input required type="url" value={cond.course_url} onChange={e => updateCondition(i, 'course_url', e.target.value)}
                             className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="https://…"
-                          />
+                            placeholder="https://…" />
                         </div>
                         <div>
-                          <label className="block text-xs font-medium text-slate-600 mb-1">Description <span className="text-slate-400 font-normal">(internal notes, not shown to students)</span></label>
-                          <textarea
-                            rows={2}
-                            value={cond.description}
-                            onChange={e => updateCondition(i, 'description', e.target.value)}
+                          <label className="block text-xs font-medium text-slate-600 mb-1">
+                            Description <span className="text-slate-400 font-normal">(internal notes, not shown to students)</span>
+                          </label>
+                          <textarea rows={2} value={cond.description} onChange={e => updateCondition(i, 'description', e.target.value)}
                             className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                            placeholder="What makes this condition different from others?"
-                          />
+                            placeholder="What makes this condition different from others?" />
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
 
-                <button type="button" onClick={addCondition}
+                <button type="button" onClick={() => setConditions(cs => [...cs, emptyCondition()])}
                   className="w-full border-2 border-dashed border-slate-300 hover:border-blue-400 text-slate-500 hover:text-blue-600 rounded-xl py-2.5 text-sm font-medium transition-colors">
                   + Add Another Condition
                 </button>
 
-                {saveError && (
-                  <p className="text-red-500 text-sm">{saveError}</p>
-                )}
+                {saveError && !bgCheckEnabled && <p className="text-red-500 text-sm">{saveError}</p>}
                 <div className="flex justify-between gap-3 pt-2">
                   <button type="button" onClick={() => setStep(1)}
+                    className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2">← Back</button>
+                  <div className="flex gap-3">
+                    <button type="button" onClick={closeNew}
+                      className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2">Cancel</button>
+                    <button type="submit" disabled={saving}
+                      className="bg-blue-600 text-white rounded-lg px-5 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                      {bgCheckEnabled ? 'Next: Background Check →' : (saving ? 'Creating…' : 'Create Study')}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
+
+            {/* ── Step 3: Background Check Questions ── */}
+            {step === 3 && bgCheckEnabled && (
+              <form onSubmit={createStudy} className="space-y-4">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">Background Check</h2>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    Students will see these questions before the course. They always proceed regardless of their answers — you mark the expected answer for analysis purposes only.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  {bcQuestions.map((q, i) => (
+                    <BCQCard
+                      key={i}
+                      q={q}
+                      index={i}
+                      total={bcQuestions.length}
+                      onChange={patch => updateBCQ(i, patch)}
+                      onRemove={() => setBcQuestions(qs => qs.filter((_, j) => j !== i))}
+                    />
+                  ))}
+                </div>
+
+                <button type="button" onClick={() => setBcQuestions(qs => [...qs, emptyBCQ()])}
+                  className="w-full border-2 border-dashed border-slate-300 hover:border-amber-400 text-slate-500 hover:text-amber-600 rounded-xl py-2.5 text-sm font-medium transition-colors">
+                  + Add Question
+                </button>
+
+                {saveError && <p className="text-red-500 text-sm">{saveError}</p>}
+                <div className="flex justify-between gap-3 pt-2">
+                  <button type="button" onClick={() => setStep(2)}
                     className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2">← Back</button>
                   <div className="flex gap-3">
                     <button type="button" onClick={closeNew}
@@ -284,12 +400,16 @@ export default function DashboardPage() {
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STATUS_COLORS[study.status]}`}>
                       {study.status}
                     </span>
+                    {study.has_background_check && (
+                      <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">
+                        Background Check
+                      </span>
+                    )}
                   </div>
                   <p className="text-sm text-slate-500 truncate">{study.description}</p>
                   <p className="text-xs text-slate-400 mt-1">{counts[study.id] || 0} participants enrolled</p>
                 </div>
 
-                {/* Status action */}
                 {study.status === 'draft' && (
                   <button onClick={() => updateStatus(study.id, 'active')}
                     className="flex-shrink-0 text-sm bg-green-600 hover:bg-green-700 text-white font-medium rounded-xl px-4 py-2 transition-colors">
@@ -304,7 +424,6 @@ export default function DashboardPage() {
                 )}
               </div>
 
-              {/* Navigation links */}
               <div className="flex items-center gap-2 flex-wrap border-t border-slate-100 pt-3">
                 <Link href={`/dashboard/studies/${study.id}/conditions`}
                   className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg px-3 py-1.5 transition-colors">
@@ -314,6 +433,12 @@ export default function DashboardPage() {
                   className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg px-3 py-1.5 transition-colors">
                   Surveys
                 </Link>
+                {study.has_background_check && (
+                  <Link href={`/dashboard/studies/${study.id}/background-check`}
+                    className="text-xs bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-lg px-3 py-1.5 transition-colors">
+                    Background Check
+                  </Link>
+                )}
                 <Link href={`/dashboard/studies/${study.id}/participants`}
                   className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg px-3 py-1.5 transition-colors">
                   Participants
@@ -327,11 +452,251 @@ export default function DashboardPage() {
   )
 }
 
+// ── Sub-components ─────────────────────────────────────────────
+
+function StepDot({ num, current, label }: { num: number; current: number; label: string }) {
+  const done = num < current
+  const active = num === current
+  return (
+    <div className={`flex items-center gap-1.5 text-sm font-medium whitespace-nowrap ${active ? 'text-blue-600' : done ? 'text-slate-400' : 'text-slate-400'}`}>
+      <span className={`w-5 h-5 rounded-full text-xs flex items-center justify-center font-bold flex-shrink-0
+        ${active ? 'bg-blue-600 text-white' : done ? 'bg-blue-200 text-blue-700' : 'bg-slate-200 text-slate-500'}`}>
+        {done ? '✓' : num}
+      </span>
+      <span className="hidden sm:inline">{label}</span>
+    </div>
+  )
+}
+
 function FormField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
       <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
       {children}
+    </div>
+  )
+}
+
+// ── Background Check Question Card ─────────────────────────────
+
+const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
+  multiple_choice: 'Multiple Choice',
+  checkbox: 'Checkboxes',
+  short_text: 'Short Answer',
+  likert: 'Likert Scale'
+}
+
+function BCQCard({ q, index, total, onChange, onRemove }: {
+  q: BCQDraft
+  index: number
+  total: number
+  onChange: (patch: Partial<BCQDraft>) => void
+  onRemove: () => void
+}) {
+  function updateChoice(ci: number, value: string) {
+    const newChoices = q.choices.map((c, j) => j === ci ? value : c)
+    onChange({ choices: newChoices })
+  }
+
+  function addChoice() {
+    onChange({ choices: [...q.choices, ''] })
+  }
+
+  function removeChoice(ci: number) {
+    const newChoices = q.choices.filter((_, j) => j !== ci)
+    const newMC = q.mc_correct_index === ci ? null
+      : q.mc_correct_index !== null && q.mc_correct_index > ci ? q.mc_correct_index - 1
+      : q.mc_correct_index
+    const newCB = q.checkbox_correct_indices
+      .filter(j => j !== ci)
+      .map(j => j > ci ? j - 1 : j)
+    onChange({ choices: newChoices, mc_correct_index: newMC, checkbox_correct_indices: newCB })
+  }
+
+  function toggleCheckboxCorrect(ci: number) {
+    const already = q.checkbox_correct_indices.includes(ci)
+    const next = already
+      ? q.checkbox_correct_indices.filter(j => j !== ci)
+      : [...q.checkbox_correct_indices, ci]
+    onChange({ checkbox_correct_indices: next })
+  }
+
+  function handleTypeChange(type: QuestionType) {
+    onChange({ question_type: type, mc_correct_index: null, checkbox_correct_indices: [], likert_correct: '' })
+  }
+
+  return (
+    <div className="border border-slate-200 rounded-xl p-4 relative">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="w-6 h-6 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex items-center justify-center flex-shrink-0">
+          {index + 1}
+        </span>
+        <span className="text-sm font-medium text-slate-700">Question {index + 1}</span>
+        {total > 1 && (
+          <button type="button" onClick={onRemove}
+            className="ml-auto text-xs text-red-400 hover:text-red-600">Remove</button>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        {/* Question text */}
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1">Question *</label>
+          <input
+            required
+            value={q.question_text}
+            onChange={e => onChange({ question_text: e.target.value })}
+            className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+            placeholder="e.g. What is the main topic of this course?"
+          />
+        </div>
+
+        {/* Question type */}
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1">Question Type</label>
+          <select
+            value={q.question_type}
+            onChange={e => handleTypeChange(e.target.value as QuestionType)}
+            className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+          >
+            {(Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).map(t => (
+              <option key={t} value={t}>{QUESTION_TYPE_LABELS[t]}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Multiple Choice */}
+        {q.question_type === 'multiple_choice' && (
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-2">
+              Options — <span className="text-amber-600 font-normal">mark the expected answer (for analysis)</span>
+            </label>
+            <div className="space-y-2">
+              {q.choices.map((choice, ci) => (
+                <div key={ci} className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name={`mc-correct-${index}`}
+                    checked={q.mc_correct_index === ci}
+                    onChange={() => onChange({ mc_correct_index: ci })}
+                    className="accent-amber-600 flex-shrink-0"
+                    title="Mark as correct answer"
+                  />
+                  <input
+                    value={choice}
+                    onChange={e => updateChoice(ci, e.target.value)}
+                    className="flex-1 border border-slate-300 rounded-lg px-2.5 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    placeholder={`Option ${ci + 1}`}
+                  />
+                  {q.choices.length > 2 && (
+                    <button type="button" onClick={() => removeChoice(ci)}
+                      className="text-slate-400 hover:text-red-500 text-xs px-1">✕</button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-slate-400 mt-1.5">Click the radio button to mark the expected answer. Students always proceed regardless of what they choose.</p>
+            <button type="button" onClick={addChoice}
+              className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">+ Add option</button>
+          </div>
+        )}
+
+        {/* Checkboxes */}
+        {q.question_type === 'checkbox' && (
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-2">
+              Options — <span className="text-amber-600 font-normal">mark the expected answers (for analysis)</span>
+            </label>
+            <div className="space-y-2">
+              {q.choices.map((choice, ci) => (
+                <div key={ci} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={q.checkbox_correct_indices.includes(ci)}
+                    onChange={() => toggleCheckboxCorrect(ci)}
+                    className="accent-amber-600 flex-shrink-0"
+                    title="Mark as correct answer"
+                  />
+                  <input
+                    value={choice}
+                    onChange={e => updateChoice(ci, e.target.value)}
+                    className="flex-1 border border-slate-300 rounded-lg px-2.5 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    placeholder={`Option ${ci + 1}`}
+                  />
+                  {q.choices.length > 2 && (
+                    <button type="button" onClick={() => removeChoice(ci)}
+                      className="text-slate-400 hover:text-red-500 text-xs px-1">✕</button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-slate-400 mt-1.5">Check the boxes to mark expected answers. Students always proceed regardless of what they select.</p>
+            <button type="button" onClick={addChoice}
+              className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">+ Add option</button>
+          </div>
+        )}
+
+        {/* Likert */}
+        {q.question_type === 'likert' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Scale</label>
+                <select
+                  value={q.likert_scale}
+                  onChange={e => onChange({ likert_scale: Number(e.target.value) as 5 | 7, likert_correct: '' })}
+                  className="border border-slate-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                >
+                  <option value={5}>1 – 5</option>
+                  <option value={7}>1 – 7</option>
+                </select>
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-slate-600 mb-1">Low label</label>
+                <input value={q.likert_low} onChange={e => onChange({ likert_low: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  placeholder="Strongly Disagree" />
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-slate-600 mb-1">High label</label>
+                <input value={q.likert_high} onChange={e => onChange({ likert_high: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  placeholder="Strongly Agree" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-2">
+                Expected value — <span className="text-amber-600 font-normal">mark for analysis (optional)</span>
+              </label>
+              <div className="flex gap-2">
+                {Array.from({ length: q.likert_scale }, (_, i) => i + 1).map(n => (
+                  <button key={n} type="button"
+                    onClick={() => onChange({ likert_correct: String(n) })}
+                    className={`w-9 h-9 rounded-lg border-2 text-sm font-medium transition-colors
+                      ${q.likert_correct === String(n)
+                        ? 'bg-amber-500 border-amber-500 text-white'
+                        : 'border-slate-300 text-slate-600 hover:border-amber-400'}`}>
+                    {n}
+                  </button>
+                ))}
+                {q.likert_correct && (
+                  <button type="button" onClick={() => onChange({ likert_correct: '' })}
+                    className="text-xs text-slate-400 hover:text-slate-600 ml-1">Clear</button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Short Text */}
+        {q.question_type === 'short_text' && (
+          <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5">
+            <p className="text-xs text-slate-500">
+              Short answer questions are informational — no correct answer is enforced. Students can always proceed after answering.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

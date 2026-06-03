@@ -9,8 +9,20 @@ export interface Study {
   consent_text: string
   status: StudyStatus
   target_per_condition: number
+  has_background_check: boolean
   created_at: string
   updated_at: string
+}
+
+export interface BackgroundCheckQuestion {
+  id: string
+  study_id: string
+  question_text: string
+  question_type: QuestionType
+  options_json: LikertOptions | ChoiceOptions | null
+  correct_answer: string
+  order_index: number
+  created_at: string
 }
 
 export interface StudyResearcher {
@@ -79,6 +91,21 @@ export interface SurveyResponse {
   participant_id: string
   question_id: string
   response_value: string
+}
+
+export interface Student {
+  id: string
+  email: string
+  full_name: string | null
+  created_at: string
+}
+
+export interface BackgroundCheckResponse {
+  id: string
+  participant_id: string
+  question_id: string
+  response_value: string
+  created_at: string
 }
 
 // Enrollment session stored in sessionStorage
